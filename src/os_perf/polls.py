@@ -1,15 +1,22 @@
-"""Poll handling via the backend actions of OpenSlides 4
-(poll.create/start/stop/publish/delete).
+"""Adapters for the two poll APIs of OpenSlides 4.
 
-Votes go to `POST /system/vote?id=<poll_id>`.
+classic:  OpenSlides 4.0 - 4.3 (stable). Polls are handled by backend actions
+          (poll.create/start/stop/publish/delete), votes go to
+          `POST /system/vote?id=<poll_id>`.
+
+new:      The reworked vote service (branch `feature/vote` of
+          openslides-vote-service, used by ostcar's fork of
+          openslides-performance). Everything goes through
+          `/system/vote/poll/...`.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from .client import OSClient
+from .client import OpenSlidesError, OSClient, _error_message
 
 MOTION_CHOICES = ("yes", "no", "abstain")
 
@@ -175,8 +182,107 @@ class ClassicPollApi(PollApi):
         return counts, (_to_float(total) if total is not None else None)
 
 
-APIS: dict[str, PollApi] = {"classic": ClassicPollApi()}
+class NewPollApi(PollApi):
+    name = "new"
+
+    BASE = "/system/vote/poll"
+
+    async def _post(self, admin: OSClient, path: str, body: dict[str, Any] | None = None) -> Any:
+        response = await admin.request("POST", path, json=body if body is not None else {})
+        if response.status_code != 200:
+            raise OpenSlidesError(
+                f"POST {path} failed: {response.status_code} {_error_message(response)}",
+                response.status_code,
+                response.text,
+            )
+        try:
+            return response.json()
+        except ValueError:
+            return None
+
+    async def create(self, admin: OSClient, spec: PollSpec) -> PollHandle:
+        body: dict[str, Any] = {
+            "title": spec.title,
+            "content_object_id": spec.content_object_id,
+            "meeting_id": spec.meeting_id,
+            "visibility": spec.poll_type,
+            "entitled_group_ids": [spec.group_id],
+        }
+        if spec.target == "motion":
+            body.update(method="approval", method_config={"allow_abstain": True})
+        else:
+            meeting_user_ids = [mu for _, mu in spec.candidates if mu]
+            body.update(
+                method="selection",
+                method_config={"max_options_amount": 1, "min_options_amount": 1},
+                option_type="meeting_user",
+                options=meeting_user_ids,
+            )
+        if spec.live_voting and spec.poll_type != "secret":
+            body["live_voting_enabled"] = True
+        result = await self._post(admin, f"{self.BASE}/", body)
+        poll_id = int(result["poll_id"])
+        handle = PollHandle(poll_id, spec)
+        if spec.target != "motion":
+            handle.option_ids = await self._read_option_ids(admin, poll_id)
+        return handle
+
+    async def start(self, admin: OSClient, poll_id: int) -> None:
+        await self._post(admin, f"{self.BASE}/{poll_id}/start")
+
+    def ballot(self, handle: PollHandle, choice: Any) -> tuple[str, dict[str, Any]]:
+        if handle.target == "motion":
+            return f"{self.BASE}/{handle.id}/vote", {"value": choice}
+        return f"{self.BASE}/{handle.id}/vote", {"value": [choice]}
+
+    async def stop(self, admin: OSClient, poll_id: int, publish: bool) -> None:
+        path = f"{self.BASE}/{poll_id}/finalize" + ("?publish" if publish else "")
+        await self._post(admin, path)
+
+    async def delete(self, admin: OSClient, poll_id: int) -> None:
+        response = await admin.request("DELETE", f"{self.BASE}/{poll_id}")
+        if response.status_code != 200:
+            raise OpenSlidesError(
+                f"DELETE poll {poll_id} failed: {response.status_code} {_error_message(response)}",
+                response.status_code,
+                response.text,
+            )
+
+    def observer_fields(self) -> dict[str, Any]:
+        return {"state": None, "result": None, "published": None, "option_ids": None}
+
+    def is_finished(self, data: dict[str, Any], poll_id: int) -> bool:
+        return self.state(data, poll_id) == "finished" and data.get(f"poll/{poll_id}/result") not in (None, "")
+
+    def tally(self, data: dict[str, Any], handle: PollHandle) -> tuple[dict[Any, float], float | None]:
+        raw = data.get(f"poll/{handle.id}/result")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                raw = {}
+        result = raw if isinstance(raw, dict) else {}
+        if handle.target == "motion":
+            counts = {c: _to_float(result.get(c)) for c in MOTION_CHOICES}
+        else:
+            counts = {o: _to_float(result.get(str(o))) for o in handle.option_ids}
+        total = result.get("total_ballots")
+        return counts, (_to_float(total) if total is not None else None)
+
+
+APIS: dict[str, PollApi] = {"classic": ClassicPollApi(), "new": NewPollApi()}
 
 
 def get_api(name: str) -> PollApi:
     return APIS[name]
+
+
+async def detect_api(admin: OSClient) -> str:
+    """Finds out which vote service is running.
+
+    The classic vote service only knows `/system/vote` (exact path), so a
+    request to `/system/vote/poll/` returns 404. The new service answers with
+    a validation error.
+    """
+    response = await admin.request("POST", f"{NewPollApi.BASE}/", json={})
+    return "classic" if response.status_code in (404, 405) else "new"

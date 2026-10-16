@@ -85,14 +85,15 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--candidates", type=int, default=3, help="Number of candidates for elections (taken from the test users)")
     g.add_argument(
         "--poll-type",
-        choices=("secret", "named"),
+        choices=("secret", "named", "open"),
         default="secret",
-        help="secret (pseudoanonymous) or named",
+        help="secret = pseudoanonymous (classic) / secret (new); named; open (new API only)",
     )
     g.add_argument("--classic-backend", choices=("fast", "long"), default=None, help="poll/backend for the classic API")
     g.add_argument("--live-voting", action="store_true", help="Enable live voting (only named polls)")
     g.add_argument("--vote-choice", default="random", choices=("random", "yes", "no", "abstain", "first"), help="Ballot to send")
     g.add_argument("--publish", action="store_true", help="Publish the polls when stopping them")
+    g.add_argument("--api", choices=("auto", "classic", "new"), default="auto", help="Poll API: classic (4.0-4.3) or new vote service")
     g.add_argument("--enable-electronic-voting", action="store_true", help="Enable electronic voting if disabled (reset afterwards)")
     g.add_argument("--seed", type=int, default=None, help="Random seed for reproducible ballots")
 
@@ -141,6 +142,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         if "assignment" in args.targets and args.candidates < 1:
             parser.error("--candidates must be >= 1")
         args.candidates = min(args.candidates, args.amount)
+        if args.poll_type == "open" and args.api == "classic":
+            args.poll_type = "named"
     return args
 
 

@@ -28,7 +28,7 @@ import httpx
 
 from .client import OpenSlidesError, OSClient, make_http_client
 from .observer import Observer
-from .polls import PollApi, PollHandle, PollSpec, get_api
+from .polls import PollApi, PollHandle, PollSpec, detect_api, get_api
 from .protocol import Protocol, latency_stats
 from .state import State, cleanup
 
@@ -213,7 +213,7 @@ class Scenario:
                     )
             step.details["group"] = f"{self.group_id} ({groups[self.group_id][0]})"
 
-            api_name = "classic"
+            api_name = args.api if args.api != "auto" else await detect_api(self.admin)
             self.api = get_api(api_name)
             self.state.data.update(api=api_name, meeting_id=args.meeting, base_url=str(self.http.base_url))
             self.state.save()
