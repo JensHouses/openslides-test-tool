@@ -670,3 +670,40 @@ async def run(args: argparse.Namespace, transport: httpx.AsyncBaseTransport | No
             protocol.print_summary()
             protocol.close()
     return exit_code
+
+
+async def run_cleanup(args: argparse.Namespace, transport: httpx.AsyncBaseTransport | None = None) -> int:
+    state_path = Path(args.state)
+    state = State.load(state_path)
+    protocol = Protocol(state_path.parent, quiet=args.quiet)
+    base_url = args.base_url
+    async with make_http_client(
+        base_url, verify_tls=args.verify_tls, timeout=args.timeout, force_ipv4=args.ipv4, transport=transport
+    ) as http:
+        admin = OSClient(http, args.username, args.password)
+        try:
+            await admin.login()
+            ok = await cleanup(admin, state, protocol)
+        finally:
+            protocol.close()
+    return 0 if ok else 3
+
+
+async def run_check(args: argparse.Namespace, transport: httpx.AsyncBaseTransport | None = None) -> int:
+    """Only login + preflight, nothing gets created (except the optional electronic voting switch)."""
+    args.enable_electronic_voting = False
+    protocol = Protocol(Path(args.out) / f"{datetime.now():%Y%m%d-%H%M%S}_check", quiet=args.quiet)
+    async with make_http_client(
+        args.base_url, verify_tls=args.verify_tls, timeout=args.timeout, force_ipv4=args.ipv4, transport=transport
+    ) as http:
+        scenario = Scenario(args, protocol, http)
+        try:
+            await scenario.preflight()
+            protocol.log("Check erfolgreich – das Ziel ist bereit für den Test.")
+            return 0
+        except OpenSlidesError as err:
+            protocol.error(f"Check fehlgeschlagen: {err}")
+            return 1
+        finally:
+            scenario.state.path.unlink(missing_ok=True)
+            protocol.close()

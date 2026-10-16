@@ -119,6 +119,20 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--max-connections", type=int, default=1000, help="Max. open HTTP connections")
     run.set_defaults(func="run")
 
+    # ---------------------------------------------------------------- check
+    check = sub.add_parser("check", help="Only check login, meeting, group, electronic voting and the poll API")
+    _common(check)
+    check.add_argument("-m", "--meeting", type=int, required=True, help="ID of the meeting")
+    check.add_argument("--group-id", type=int, default=0, help="Group for the users")
+    check.add_argument("--api", choices=("auto", "classic", "new"), default="auto")
+    check.add_argument("--out", default="runs")
+    check.set_defaults(func="check", enable_electronic_voting=False, seed=None)
+
+    # -------------------------------------------------------------- cleanup
+    clean = sub.add_parser("cleanup", help="Delete leftovers of an aborted run using its state.json")
+    _common(clean)
+    clean.add_argument("--state", required=True, help="Path to state.json of the run")
+    clean.set_defaults(func="cleanup")
     return parser
 
 
@@ -151,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     from . import scenario
 
-    entry = scenario.run
+    entry = {"run": scenario.run, "check": scenario.run_check, "cleanup": scenario.run_cleanup}[args.func]
 
     async def runner() -> int:
         task = asyncio.current_task()
