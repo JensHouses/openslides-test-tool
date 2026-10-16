@@ -80,6 +80,8 @@ class Observer:
         deadline = time.perf_counter() + timeout
         next_fallback = time.perf_counter() + self.fallback_interval
         while True:
+            # Clear before checking, so no change between check and wait gets lost.
+            self._changed.clear()
             if predicate(self.data):
                 return True
             now = time.perf_counter()
@@ -89,7 +91,6 @@ class Observer:
                 await self.refresh()
                 next_fallback = time.perf_counter() + self.fallback_interval
                 continue
-            self._changed.clear()
             try:
                 await asyncio.wait_for(self._changed.wait(), min(deadline, next_fallback) - now)
             except asyncio.TimeoutError:
