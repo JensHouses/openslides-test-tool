@@ -636,7 +636,11 @@ async def run(args: argparse.Namespace, transport: httpx.AsyncBaseTransport | No
         except Abort:
             protocol.log("Abbruch durch Bediener.")
         except asyncio.CancelledError:
-            protocol.warn("Unterbrochen (Ctrl+C) – räume auf …")
+            # Swallow the first Ctrl+C so the cleanup below can still await.
+            task = asyncio.current_task()
+            if task is not None:
+                task.uncancel()
+            protocol.warn("Unterbrochen (Ctrl+C) – räume auf … (nochmal Ctrl+C = hart abbrechen)")
             exit_code = 130
         except OpenSlidesError as err:
             protocol.error(f"Fehler: {err}")

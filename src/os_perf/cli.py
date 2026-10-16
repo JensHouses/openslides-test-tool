@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import getpass
 import os
+import signal
 import sys
 from datetime import datetime
 
@@ -149,8 +150,17 @@ def main(argv: list[str] | None = None) -> int:
 
     entry = scenario.run
 
+    async def runner() -> int:
+        task = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        try:
+            loop.add_signal_handler(signal.SIGTERM, task.cancel)  # type: ignore[union-attr]
+        except (NotImplementedError, RuntimeError):
+            pass
+        return await entry(args)
+
     try:
-        return asyncio.run(entry(args))
+        return asyncio.run(runner())
     except KeyboardInterrupt:
         print("\nHart abgebrochen. Ggf. 'os-perf cleanup --state <run>/state.json' ausführen.", file=sys.stderr)
         return 130
