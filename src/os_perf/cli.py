@@ -22,6 +22,19 @@ from . import __version__
 TARGETS = ("motion", "assignment")
 
 
+class _HelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
+    """Shows defaults, but not the meaningless ones (None, False, 0)."""
+
+    def _get_help_string(self, action: argparse.Action) -> str:
+        if (
+            action.default in (None, False, 0)
+            or action.default is argparse.SUPPRESS
+            or isinstance(action, argparse._StoreFalseAction)
+        ):
+            return action.help or ""
+        return super()._get_help_string(action)
+
+
 def _targets(value: str) -> list[str]:
     targets = [t.strip() for t in value.split(",") if t.strip()]
     aliases = {"m": "motion", "antrag": "motion", "a": "assignment", "wahl": "assignment", "election": "assignment"}
@@ -34,8 +47,8 @@ def _targets(value: str) -> list[str]:
 
 def _common(parser: argparse.ArgumentParser) -> None:
     g = parser.add_argument_group("connection (like openslides-performance)")
-    g.add_argument("-d", "--domain", default="localhost:8000", help="Domain of the OpenSlides server (default: %(default)s)")
-    g.add_argument("-u", "--username", default="superadmin", help="Superuser name (default: %(default)s)")
+    g.add_argument("-d", "--domain", default="localhost:8000", help="Domain of the OpenSlides server")
+    g.add_argument("-u", "--username", default="superadmin", help="Superuser name")
     g.add_argument(
         "-p",
         "--password",
@@ -44,8 +57,8 @@ def _common(parser: argparse.ArgumentParser) -> None:
     )
     g.add_argument("--http", action="store_true", help="Use http instead of https")
     g.add_argument("-4", "--ipv4", action="store_true", help="Force IPv4")
-    g.add_argument("--verify-tls", action="store_true", help="Verify TLS certificates (default: off, like openslides-performance)")
-    g.add_argument("--timeout", type=float, default=120.0, help="Timeout per request in seconds (default: %(default)s)")
+    g.add_argument("--verify-tls", action="store_true", help="Verify TLS certificates (off by default, like openslides-performance)")
+    g.add_argument("--timeout", type=float, default=120.0, help="Timeout per request in seconds")
     g.add_argument("--config", help="JSON file with default values for any option (default: ./config.json if present)")
     g.add_argument("-q", "--quiet", action="store_true", help="Only print warnings, errors and the summary")
 
@@ -64,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the poll load test",
         description="Creates users and polls, lets all users vote, stops the polls and measures everything. "
         "All created data is deleted at the end (also on Ctrl+C).",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=_HelpFormatter,
     )
     _common(run)
     g = run.add_argument_group("scenario")
@@ -124,7 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(func="run")
 
     # ---------------------------------------------------------------- check
-    check = sub.add_parser("check", help="Only check login, meeting, group, electronic voting and the poll API")
+    check = sub.add_parser("check", formatter_class=_HelpFormatter, help="Only check login, meeting, group, electronic voting and the poll API")
     _common(check)
     check.add_argument("-m", "--meeting", type=int, default=0, help="ID of the meeting (required)")
     check.add_argument("--group-id", type=int, default=0, help="Group for the users")
@@ -133,7 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     check.set_defaults(func="check", enable_electronic_voting=False, seed=None)
 
     # -------------------------------------------------------------- cleanup
-    clean = sub.add_parser("cleanup", help="Delete leftovers of an aborted run using its state.json")
+    clean = sub.add_parser("cleanup", formatter_class=_HelpFormatter, help="Delete leftovers of an aborted run using its state.json")
     _common(clean)
     clean.add_argument("--state", required=True, help="Path to state.json of the run")
     clean.set_defaults(func="cleanup")
