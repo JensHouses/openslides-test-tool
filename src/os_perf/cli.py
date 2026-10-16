@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _common(run)
     g = run.add_argument_group("scenario")
-    g.add_argument("-m", "--meeting", type=int, required=True, help="ID of the meeting to test in")
+    g.add_argument("-m", "--meeting", type=int, default=0, help="ID of the meeting to test in (required)")
     g.add_argument("-n", "--amount", type=int, default=10, help="Number of users (voters) to create")
     g.add_argument("--users-password", default="pass", help="Password of all created users")
     g.add_argument(
@@ -126,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ---------------------------------------------------------------- check
     check = sub.add_parser("check", help="Only check login, meeting, group, electronic voting and the poll API")
     _common(check)
-    check.add_argument("-m", "--meeting", type=int, required=True, help="ID of the meeting")
+    check.add_argument("-m", "--meeting", type=int, default=0, help="ID of the meeting (required)")
     check.add_argument("--group-id", type=int, default=0, help="Group for the users")
     check.add_argument("--api", choices=("auto", "classic", "new"), default="auto")
     check.add_argument("--out", default="runs")
@@ -148,7 +148,15 @@ def _load_config(argv: list[str]) -> dict[str, Any]:
     if not path:
         return {}
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return {k.replace("-", "_"): v for k, v in data.items()}
+    aliases = {"target": "targets", "no_wait": None}
+    config = {}
+    for key, value in data.items():
+        key = key.replace("-", "_")
+        if key == "no_wait":
+            config["wait"] = not value
+            continue
+        config[aliases.get(key, key)] = value
+    return config
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -160,6 +168,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             for subparser in action.choices.values():
                 subparser.set_defaults(**config)
     args = parser.parse_args(argv)
+    if args.func in ("run", "check") and not args.meeting:
+        parser.error("-m/--meeting is required (on the command line or in the config file)")
 
     if args.password is None:
         args.password = os.environ.get("OS_PERF_PASSWORD")
