@@ -141,3 +141,84 @@ oder fragt danach. So landet es nicht in der Shell-History.
 | `--config` | JSON-Datei mit Defaults, siehe `config.example.json` | `./config.json` |
 
 Die vollständige Liste zeigt `os-perf run --help`.
+
+## Protokoll
+
+Jeder Lauf legt ein Verzeichnis `runs/<datum>-<zeit>_m<meeting>_n<user>_p<parallel>/` an:
+
+| Datei | Inhalt |
+|---|---|
+| `protocol.log` | lesbares Protokoll, wie auf der Konsole, plus Zusammenfassung |
+| `events.jsonl` | ein JSON-Objekt pro Schritt, Statistik, Validierung und Bedienereingabe |
+| `requests.csv` | jeder einzelne Request: Art, Runde, Poll, User, Sendezeitpunkt, Latenz, Status, Fehler |
+| `summary.json` | alle Schritte, Latenz-Statistiken (p50/p90/p95/p99/max, Durchsatz) und Validierung |
+| `state.json` | alles, was angelegt oder geändert wurde (Grundlage für das Aufräumen) |
+
+Gemessene Schritte:
+
+| Schritt | Was gemessen wird |
+|---|---|
+| `create_users`, `login_users` | Anlegen und Login aller User (Login ist wegen argon2 teuer) |
+| `create_content`, `create_polls` | Anlegen der Anträge/Wahlen und Polls |
+| `start_polls` / `start_visible` | Start-Requests / bis der Status „gestartet“ per Autoupdate ankommt |
+| `voting` | erste bis letzte Stimme, plus Latenz-Statistik pro Poll und gesamt |
+| `stop_and_results` | Stop-Request und Warten auf das Ergebnis |
+| `R<n> stop request` / `R<n> result visible` | pro Poll: Dauer des Stop-Requests / Zeit vom Stop bis das Ergebnis sichtbar ist |
+| `results_visible_all` | erster Stop bis zum letzten sichtbaren Ergebnis |
+| `cleanup_*` | Aufräumen |
+
+„Sichtbar“ heißt: Das Tool hält wie ein Browser eine Autoupdate-Verbindung offen
+(`/system/autoupdate`) und misst, wann die Änderung dort ankommt. Fällt der Stream aus,
+liest es ersatzweise alle 2 s per `?single=1`.
+
+## Aufräumen
+
+- Normales Ende (`q`), Fehler, Ctrl+C und SIGTERM löschen automatisch Polls,
+  Anträge/Wahlen und User und setzen Einstellungen zurück.
+- Ein zweites Ctrl+C bricht hart ab. Ist danach noch etwas übrig, gilt das auch nach
+  einem Absturz oder mit `--keep`:
+
+  ```bash
+  os-perf cleanup -d openslides.example.org -u superadmin --state runs/<lauf>/state.json
+  ```
+
+## Classic- vs. neue Vote-API
+
+| | classic (OpenSlides 4.0–4.3) | neu (`openslides-vote-service` Branch `feature/vote`) |
+|---|---|---|
+| Poll anlegen/starten/stoppen | Backend-Actions `poll.create/start/stop/publish/delete` | `POST /system/vote/poll/`, `…/{id}/start`, `…/{id}/finalize`, `DELETE …/{id}` |
+| Stimme | `POST /system/vote?id=<poll>` mit `{"value":{"<option>":"Y"}}` | `POST /system/vote/poll/<id>/vote` mit `{"value":"yes"}` bzw. `{"value":[<option>]}` |
+| Antrag | `pollmethod YNA` | `method approval` |
+| Wahl | `pollmethod Y`, 1 Stimme | `method selection`, 1 Option |
+| Ergebnis | `poll/votescast`, `option/*/yes,no,abstain` | `poll/result` (JSON) |
+
+`--api auto` erkennt die Variante: Der klassische Vote-Service antwortet auf
+`POST /system/vote/poll/` mit 404.
+
+## Hinweise für große Tests
+
+- **Dateideskriptoren**: Bei vielen Usern vorher `ulimit -Sn 65536` setzen (die Go-Variante
+  empfiehlt das ebenfalls).
+- **Connection-Pool**: Alle simulierten User teilen sich einen Pool mit bis zu
+  `--max-connections` Verbindungen. Ein echter Browser hätte eigene Verbindungen. Die
+  gemessene Latenz enthält auch die Wartezeit auf eine freie Verbindung.
+- **Lastgenerator nicht zum Flaschenhals machen**: Bei sehr vielen Usern das Tool auf einem
+  starken Rechner nahe am Server laufen lassen und die CPU-Last des Tools im Blick behalten.
+  Python/asyncio schafft je nach Rechner einige tausend Requests pro Sekunde.
+- **Token-Ablauf**: Access-Tokens laufen nach 10 min ab. Das Tool erneuert sie vor dem Start
+  jeder Runde (Schritt `refresh_tokens`) und bei Bedarf automatisch.
+- **Nie gegen eine Produktivinstanz während einer echten Veranstaltung laufen lassen.** Das
+  Tool schreibt in die Datenbank (User, Anträge, Wahlen) und erzeugt bewusst Last.
+
+## Entwicklung / Tests
+
+`tests/fake_openslides.py` ist ein In-Memory-Fake der OpenSlides-HTTP-API für beide
+Vote-APIs. Die End-to-End-Tests führen damit das komplette Szenario aus, inklusive
+Parallelität, Runden, Validierung und Aufräumen:
+
+```bash
+uv pip install -e '.[test]' && .venv/bin/python -m pytest
+```
+
+Der Fake bildet die echten Schnittstellen nur nach. Vor dem ersten großen Lauf sollte das
+Tool deshalb einmal mit wenigen Usern gegen eine Testinstanz laufen.
