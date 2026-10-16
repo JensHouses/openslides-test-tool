@@ -9,10 +9,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import json
 import os
 import signal
 import sys
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 from . import __version__
 
@@ -43,6 +46,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
     g.add_argument("-4", "--ipv4", action="store_true", help="Force IPv4")
     g.add_argument("--verify-tls", action="store_true", help="Verify TLS certificates (default: off, like openslides-performance)")
     g.add_argument("--timeout", type=float, default=120.0, help="Timeout per request in seconds (default: %(default)s)")
+    g.add_argument("--config", help="JSON file with default values for any option (default: ./config.json if present)")
     g.add_argument("-q", "--quiet", action="store_true", help="Only print warnings, errors and the summary")
 
 
@@ -136,9 +140,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _load_config(argv: list[str]) -> dict[str, Any]:
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config")
+    known, _ = pre.parse_known_args(argv)
+    path = known.config or ("config.json" if Path("config.json").exists() else None)
+    if not path:
+        return {}
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {k.replace("-", "_"): v for k, v in data.items()}
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
+    config = _load_config(argv)
+    if config:
+        for action in parser._subparsers._group_actions:  # type: ignore[union-attr]
+            for subparser in action.choices.values():
+                subparser.set_defaults(**config)
     args = parser.parse_args(argv)
 
     if args.password is None:

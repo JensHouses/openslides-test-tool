@@ -1,0 +1,11 @@
+{
+    "domain": "openslides.example.org",
+    "username": "superadmin",
+    "meeting": 1,
+    "amount": 500,
+    "parallel": 3,
+    "target": "assignment",
+    "users_password": "perf-test-pass",
+    "vote_concurrency": 0,
+    "login_concurrency": 50
+}
