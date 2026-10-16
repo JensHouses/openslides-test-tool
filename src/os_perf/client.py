@@ -11,6 +11,8 @@ import asyncio
 import base64
 import json
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from http.cookiejar import CookieJar
 from typing import Any
 
@@ -209,6 +211,42 @@ class OSClient:
                 response.text,
             )
         return response.json()
+
+    @asynccontextmanager
+    async def stream(self, requests: list[dict[str, Any]]) -> AsyncIterator[AsyncIterator[dict[str, Any]]]:
+        """Opens a streaming autoupdate connection. Yields an iterator of messages."""
+        await self.ensure_fresh(margin=120)
+        request = self.http.build_request(
+            "POST",
+            AUTOUPDATE_PATH,
+            json=requests,
+            headers=self.auth_headers(),
+            timeout=httpx.Timeout(None),
+        )
+        response = await self.http.send(request, stream=True)
+        try:
+            if response.status_code != 200:
+                await response.aread()
+                raise OpenSlidesError(
+                    f"autoupdate stream failed: {response.status_code} {_error_message(response)}",
+                    response.status_code,
+                )
+
+            async def messages() -> AsyncIterator[dict[str, Any]]:
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        message = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(message, dict):
+                        yield message
+
+            yield messages()
+        finally:
+            await response.aclose()
 
 
 def fqfield(collection: str, id_: int, field: str) -> str:
