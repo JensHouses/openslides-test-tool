@@ -162,6 +162,7 @@ class Scenario:
         self.voters: list[OSClient] = []
         self.users: list[tuple[int, str]] = []
         self.meeting_users: dict[int, int] = {}
+        self.validation: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------ preflight
 
@@ -553,8 +554,46 @@ class Scenario:
                     max(t["t_visible"] for t in timings.values()) - min(t["t_sent"] for t in timings.values()),
                     round=round_,
                 )
+
+            # ---- validate
+            for handle in started:
+                self.validate(round_, handle, observer.data, expected[handle.id])
         finally:
             await observer.stop()
+
+    def validate(self, round_: int, handle: PollHandle, data: dict[str, Any], expected: Counter) -> None:
+        api = self.api
+        assert api is not None
+        if not api.is_finished(data, handle.id):
+            self.validation.append({"round": round_, "poll_id": handle.id, "ok": False, "reason": "not finished"})
+            return
+        counts, total = api.tally(data, handle)
+        sent = sum(expected.values())
+        mismatches = {
+            str(choice): {"expected": expected.get(choice, 0), "server": counts.get(choice, 0.0)}
+            for choice in set(counts) | set(expected)
+            if abs(counts.get(choice, 0.0) - expected.get(choice, 0)) > 1e-6
+        }
+        total_ok = total is None or abs(total - sent) < 1e-6
+        ok = not mismatches and total_ok
+        record = {
+            "round": round_,
+            "poll_id": handle.id,
+            "ok": ok,
+            "accepted_ballots": sent,
+            "server_total": total,
+            "counts": {str(k): v for k, v in counts.items()},
+        }
+        if mismatches:
+            record["mismatches"] = mismatches
+        self.validation.append(record)
+        self.protocol.event("validation", **record)
+        if ok:
+            self.protocol.log(f"  ✔ Ergebnis poll {handle.id} korrekt ({sent} Stimmen: {dict(record['counts'])})")
+        else:
+            self.protocol.error(
+                f"  ✘ Ergebnis poll {handle.id} weicht ab: gesendet={sent}, Server total={total}, Abweichungen={mismatches}"
+            )
 
 
 # ------------------------------------------------------------------ entry
@@ -606,6 +645,9 @@ async def run(args: argparse.Namespace, transport: httpx.AsyncBaseTransport | No
             protocol.error(f"Unerwarteter Fehler: {type(err).__name__}: {err}")
             exit_code = 1
         finally:
+            protocol.meta["validation"] = scenario.validation
+            if any(not v["ok"] for v in scenario.validation):
+                exit_code = exit_code or 2
             try:
                 if args.keep:
                     protocol.warn(f"--keep: Testdaten bleiben erhalten. Aufräumen: os-perf cleanup --state {scenario.state.path}")
