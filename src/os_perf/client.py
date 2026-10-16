@@ -189,6 +189,8 @@ class OSClient:
     async def action(self, name: str, data: list[dict[str, Any]]) -> list[Any]:
         """Calls a backend action and returns the result list of this action."""
         response = await self.request("POST", ACTION_PATH, json=[{"action": name, "data": data}])
+        if response.status_code == 202:
+            return await self._wait_action_worker(name, response)
         if response.status_code != 200:
             raise OpenSlidesError(
                 f"action {name} failed: {response.status_code} {_error_message(response)}",
@@ -200,6 +202,27 @@ class OSClient:
             raise OpenSlidesError(f"action {name} failed: {body.get('message')}", 200, response.text)
         results = body.get("results") or [[]]
         return results[0] or []
+
+    async def _wait_action_worker(self, name: str, response: httpx.Response) -> list[Any]:
+        """Long running actions return an action_worker; wait until it is done."""
+        body = response.json()
+        try:
+            fqid = body["results"][0][0]["fqid"]
+            worker_id = int(fqid.split("/")[1])
+        except (KeyError, IndexError, ValueError, TypeError) as err:
+            raise OpenSlidesError(f"action {name}: unexpected 202 response {body}") from err
+        while True:
+            data = await self.get(
+                [{"collection": "action_worker", "ids": [worker_id], "fields": {"state": None, "result": None}}]
+            )
+            state = data.get(f"action_worker/{worker_id}/state")
+            if state == "end":
+                result = data.get(f"action_worker/{worker_id}/result") or {}
+                results = result.get("results") if isinstance(result, dict) else None
+                return (results or [[]])[0] or []
+            if state == "aborted":
+                raise OpenSlidesError(f"action {name}: action worker {worker_id} aborted")
+            await asyncio.sleep(0.5)
 
     async def get(self, requests: list[dict[str, Any]]) -> dict[str, Any]:
         """Reads data once via the autoupdate service. Returns `collection/id/field -> value`."""
