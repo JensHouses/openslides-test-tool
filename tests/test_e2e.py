@@ -5,8 +5,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from os_perf import scenario
-from os_perf.cli import parse_args
+from openslides_test_tool import scenario
+from openslides_test_tool.cli import parse_args
 
 from .fake_openslides import FakeOpenSlides
 
