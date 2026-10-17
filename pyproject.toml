@@ -1,5 +1,5 @@
 [project]
-name = "os-perf"
+name = "openslides-test-tool"
 version = "0.1.0"
 description = "Performance tester for OpenSlides 4 polls (motions and elections)"
 readme = "README.md"
@@ -14,7 +14,8 @@ dependencies = [
 test = ["pytest>=8"]
 
 [project.scripts]
-os-perf = "os_perf.cli:main"
+openslides-test-tool = "os_perf.cli:main"
+os-test = "os_perf.cli:main"
 
 [build-system]
 requires = ["hatchling"]

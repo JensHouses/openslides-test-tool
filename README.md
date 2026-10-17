@@ -1,4 +1,4 @@
-# os-perf – Last- und Performancetest für OpenSlides-Abstimmungen
+# openslides-test-tool – Last- und Performancetest für OpenSlides-Abstimmungen
 
 Python-Tool, das den kritischsten Pfad von OpenSlides 4 testbar macht: **elektronische
 Wahlen und Abstimmungen über Anträge**, auch mehrere gleichzeitig.
@@ -57,59 +57,60 @@ Oder mit pip:
 python3 -m venv .venv && .venv/bin/pip install -e .
 ```
 
-Danach steht `os-perf` (bzw. `.venv/bin/os-perf`) zur Verfügung.
+Danach steht `openslides-test-tool` (bzw. `.venv/bin/openslides-test-tool`) zur Verfügung,
+kurz auch als `os-test`.
 
 ## Benutzung
 
 Erst prüfen, ob alles passt. Dabei wird nichts angelegt:
 
 ```bash
-os-perf check -d openslides.example.org -u superadmin -m 1
+openslides-test-tool check -d openslides.example.org -u superadmin -m 1
 ```
 
 Wahl mit 500 Usern:
 
 ```bash
-os-perf run -d openslides.example.org -u superadmin -m 1 -n 500
+openslides-test-tool run -d openslides.example.org -u superadmin -m 1 -n 500
 ```
 
 Drei Wahlen parallel:
 
 ```bash
-os-perf run -d openslides.example.org -m 1 -n 500 -P 3 -t assignment
+openslides-test-tool run -d openslides.example.org -m 1 -n 500 -P 3 -t assignment
 ```
 
 Antragsabstimmung statt Wahl:
 
 ```bash
-os-perf run -d openslides.example.org -m 1 -n 500 -t motion
+openslides-test-tool run -d openslides.example.org -m 1 -n 500 -t motion
 ```
 
 Gemischt, zwei Wahlen und zwei Anträge parallel:
 
 ```bash
-os-perf run -d openslides.example.org -m 1 -n 500 -P 4 -t assignment,motion
+openslides-test-tool run -d openslides.example.org -m 1 -n 500 -P 4 -t assignment,motion
 ```
 
 Vollautomatisch (z. B. für CI), 3 Runden ohne Rückfrage:
 
 ```bash
-os-perf run -d openslides.example.org -m 1 -n 200 -P 2 --no-wait --rounds 3
+openslides-test-tool run -d openslides.example.org -m 1 -n 200 -P 2 --no-wait --rounds 3
 ```
 
 Realistischer: Stimmen über 30 s verteilen, höchstens 200 gleichzeitig:
 
 ```bash
-os-perf run -d openslides.example.org -m 1 -n 1000 --vote-spread 30 --vote-concurrency 200
+openslides-test-tool run -d openslides.example.org -m 1 -n 1000 --vote-spread 30 --vote-concurrency 200
 ```
 
 Lokale Dev-Instanz:
 
 ```bash
-os-perf run -d localhost:8000 -m 1 -n 50
+openslides-test-tool run -d localhost:8000 -m 1 -n 50
 ```
 
-Wenn `-p` fehlt, liest das Tool das Passwort aus der Umgebungsvariable `OS_PERF_PASSWORD`
+Wenn `-p` fehlt, liest das Tool das Passwort aus der Umgebungsvariable `OS_TEST_TOOL_PASSWORD`
 oder fragt danach. So landet es nicht in der Shell-History.
 
 ### Wichtige Optionen
@@ -137,10 +138,10 @@ oder fragt danach. So landet es nicht in der Shell-History.
 | `--login-concurrency` | max. gleichzeitige Logins | 50 |
 | `--api` | `auto`, `classic` (4.0–4.3) oder `new` (neuer Vote-Service) | `auto` |
 | `--enable-electronic-voting` | elektronische Abstimmung bei Bedarf einschalten (wird danach zurückgesetzt) | aus |
-| `--keep` | nichts löschen (später `os-perf cleanup`) | aus |
+| `--keep` | nichts löschen (später `openslides-test-tool cleanup`) | aus |
 | `--config` | JSON-Datei mit Defaults, siehe `config.example.json` | `./config.json` |
 
-Die vollständige Liste zeigt `os-perf run --help`.
+Die vollständige Liste zeigt `openslides-test-tool run --help`.
 
 ## Protokoll
 
@@ -179,7 +180,7 @@ liest es ersatzweise alle 2 s per `?single=1`.
   einem Absturz oder mit `--keep`:
 
   ```bash
-  os-perf cleanup -d openslides.example.org -u superadmin --state runs/<lauf>/state.json
+  openslides-test-tool cleanup -d openslides.example.org -u superadmin --state runs/<lauf>/state.json
   ```
 
 ## Classic- vs. neue Vote-API

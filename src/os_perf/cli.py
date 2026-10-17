@@ -53,7 +53,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
         "-p",
         "--password",
         default=None,
-        help="Superuser password. Default: env OS_PERF_PASSWORD, otherwise prompted",
+        help="Superuser password. Default: env OS_TEST_TOOL_PASSWORD, otherwise prompted",
     )
     g.add_argument("--http", action="store_true", help="Use http instead of https")
     g.add_argument("-4", "--ipv4", action="store_true", help="Force IPv4")
@@ -65,7 +65,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="os-perf",
+        prog="openslides-test-tool",
         description="Performance test for OpenSlides 4 polls (elections and motion votes).",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -185,7 +185,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("-m/--meeting is required (on the command line or in the config file)")
 
     if args.password is None:
-        args.password = os.environ.get("OS_PERF_PASSWORD")
+        args.password = os.environ.get("OS_TEST_TOOL_PASSWORD")
     if args.password is None:
         args.password = getpass.getpass(f"Password for {args.username}: ")
     proto = "http" if args.http else "https"
@@ -222,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return asyncio.run(runner())
     except KeyboardInterrupt:
-        print("\nHart abgebrochen. Ggf. 'os-perf cleanup --state <run>/state.json' ausführen.", file=sys.stderr)
+        print("\nHart abgebrochen. Ggf. 'openslides-test-tool cleanup --state <run>/state.json' ausführen.", file=sys.stderr)
         return 130
 
 

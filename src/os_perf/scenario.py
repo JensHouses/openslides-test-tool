@@ -654,7 +654,7 @@ async def run(args: argparse.Namespace, transport: httpx.AsyncBaseTransport | No
                 exit_code = exit_code or 2
             try:
                 if args.keep:
-                    protocol.warn(f"--keep: Testdaten bleiben erhalten. Aufräumen: os-perf cleanup --state {scenario.state.path}")
+                    protocol.warn(f"--keep: Testdaten bleiben erhalten. Aufräumen: openslides-test-tool cleanup --state {scenario.state.path}")
                 elif not scenario.state.is_empty():
                     if not scenario.admin.logged_in:
                         await scenario.admin.login()
@@ -663,7 +663,7 @@ async def run(args: argparse.Namespace, transport: httpx.AsyncBaseTransport | No
             except (asyncio.CancelledError, Exception) as err:  # noqa: BLE001
                 protocol.error(
                     f"Cleanup fehlgeschlagen ({type(err).__name__}: {err}). "
-                    f"Nachholen mit: os-perf cleanup --state {scenario.state.path}"
+                    f"Nachholen mit: openslides-test-tool cleanup --state {scenario.state.path}"
                 )
                 exit_code = exit_code or 3
             protocol.write_summary()

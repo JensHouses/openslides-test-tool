@@ -1,7 +1,7 @@
 """Bookkeeping of everything the tool creates or changes, and the cleanup.
 
 The state is written to `state.json` after every change, so a crashed or
-killed run can be cleaned up later with `os-perf cleanup --state <file>`.
+killed run can be cleaned up later with `openslides-test-tool cleanup --state <file>`.
 """
 
 from __future__ import annotations
@@ -129,5 +129,5 @@ async def cleanup(admin: OSClient, state: State, protocol: Protocol, batch: int 
     if success:
         protocol.log("Cleanup vollständig – alle Testdaten entfernt.")
     else:
-        protocol.warn(f"Cleanup unvollständig. Rest steht in {state.path}; erneut mit 'os-perf cleanup --state {state.path}'.")
+        protocol.warn(f"Cleanup unvollständig. Rest steht in {state.path}; erneut mit 'openslides-test-tool cleanup --state {state.path}'.")
     return success
