@@ -3,6 +3,8 @@ name = "os-perf"
 version = "0.1.0"
 description = "Performance tester for OpenSlides 4 polls (motions and elections)"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",
