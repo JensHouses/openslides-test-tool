@@ -87,7 +87,13 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument(
         "--user-prefix",
         default=None,
-        help="Username prefix of the created users (default: perf<HHMMSS>_, so runs never collide)",
+        help="Username prefix of the test users (default: perf<HHMMSS>_ so runs never collide; perf_ with --persistent-users)",
+    )
+    g.add_argument(
+        "--persistent-users",
+        action="store_true",
+        help="Reuse existing users with the prefix, create only the missing ones and keep them at the end "
+        "(delete later with 'cleanup-users')",
     )
     g.add_argument("--group-id", type=int, default=0, help="Group for the users (default: the meeting's Delegates group)")
     g.add_argument(
@@ -143,13 +149,25 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--group-id", type=int, default=0, help="Group for the users")
     check.add_argument("--api", choices=("auto", "classic", "new"), default="auto")
     check.add_argument("--out", default="runs")
-    check.set_defaults(func="check", enable_electronic_voting=False, seed=None)
+    check.set_defaults(func="check", enable_electronic_voting=False, seed=None, persistent_users=False)
 
     # -------------------------------------------------------------- cleanup
     clean = sub.add_parser("cleanup", formatter_class=_HelpFormatter, help="Delete leftovers of an aborted run using its state.json")
     _common(clean)
     clean.add_argument("--state", required=True, help="Path to state.json of the run")
     clean.set_defaults(func="cleanup")
+
+    # -------------------------------------------------------- cleanup-users
+    clean_users = sub.add_parser(
+        "cleanup-users",
+        formatter_class=_HelpFormatter,
+        help="Delete persistent test users: every user named <prefix><number>",
+    )
+    _common(clean_users)
+    clean_users.add_argument("--user-prefix", default="perf_", help="Username prefix of the users to delete")
+    clean_users.add_argument("--create-batch", type=int, default=100, help="Users per user.delete request")
+    clean_users.add_argument("--out", default="runs", help="Directory for the protocols")
+    clean_users.set_defaults(func="cleanup_users")
     return parser
 
 
@@ -193,7 +211,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.func == "run":
         if args.user_prefix is None:
-            args.user_prefix = f"perf{datetime.now():%H%M%S}_"
+            args.user_prefix = "perf_" if args.persistent_users else f"perf{datetime.now():%H%M%S}_"
         if args.amount < 1 or args.parallel < 1:
             parser.error("--amount and --parallel must be >= 1")
         if "assignment" in args.targets and args.candidates < 1:
@@ -208,7 +226,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     from . import scenario
 
-    entry = {"run": scenario.run, "check": scenario.run_check, "cleanup": scenario.run_cleanup}[args.func]
+    entry = {
+        "run": scenario.run,
+        "check": scenario.run_check,
+        "cleanup": scenario.run_cleanup,
+        "cleanup_users": scenario.run_cleanup_users,
+    }[args.func]
 
     async def runner() -> int:
         task = asyncio.current_task()

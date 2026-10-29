@@ -21,6 +21,7 @@ import httpx
 LOGIN_PATH = "/system/auth/login"
 WHO_AM_I_PATH = "/system/auth/who-am-i"
 ACTION_PATH = "/system/action/handle_request"
+PRESENTER_PATH = "/system/presenter/handle_request"
 AUTOUPDATE_PATH = "/system/autoupdate"
 
 
@@ -223,6 +224,20 @@ class OSClient:
             if state == "aborted":
                 raise OpenSlidesError(f"action {name}: action worker {worker_id} aborted")
             await asyncio.sleep(0.5)
+
+    async def presenter(self, name: str, data: dict[str, Any]) -> Any:
+        """Calls a presenter and returns its result."""
+        response = await self.request("POST", PRESENTER_PATH, json=[{"presenter": name, "data": data}])
+        if response.status_code != 200:
+            raise OpenSlidesError(
+                f"presenter {name} failed: {response.status_code} {_error_message(response)}",
+                response.status_code,
+                response.text,
+            )
+        body = response.json()
+        if not isinstance(body, list) or not body:
+            raise OpenSlidesError(f"presenter {name}: unexpected response {str(body)[:200]}")
+        return body[0]
 
     async def get(self, requests: list[dict[str, Any]]) -> dict[str, Any]:
         """Reads data once via the autoupdate service. Returns `collection/id/field -> value`."""

@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import random
+import re
 import sys
 import time
 from collections import Counter
@@ -30,7 +31,7 @@ from .client import OpenSlidesError, OSClient, make_http_client
 from .observer import Observer
 from .polls import PollApi, PollHandle, PollSpec, detect_api, get_api
 from .protocol import Protocol, latency_stats
-from .state import State, cleanup
+from .state import State, cleanup, delete_users
 
 
 class Abort(Exception):
@@ -161,6 +162,7 @@ class Scenario:
         self.group_id: int = 0
         self.voters: list[OSClient] = []
         self.users: list[tuple[int, str]] = []
+        self.reused: set[int] = set()
         self.meeting_users: dict[int, int] = {}
         self.validation: list[dict[str, Any]] = []
 
@@ -233,9 +235,121 @@ class Scenario:
 
     # ---------------------------------------------------------------- users
 
-    async def create_users(self) -> None:
-        args, protocol = self.args, self.protocol
+    async def prepare_users(self) -> None:
+        """Makes sure `amount` test users exist: reuses persistent ones, creates the rest."""
+        args = self.args
         names = [f"{args.user_prefix}{i}" for i in range(1, args.amount + 1)]
+        if args.persistent_users:
+            self.state.data["persistent_user_prefix"] = args.user_prefix
+            self.state.save()
+            found = await self.find_users(names)
+            await self.attach_users(found)
+            names = [n for n in names if n not in found]
+        await self.create_users(names)
+        if not self.users:
+            raise OpenSlidesError("no user could be created")
+        self.users.sort()
+
+    async def find_users(self, names: list[str]) -> dict[str, int]:
+        """Looks up existing users by exact username (organization wide). Returns name -> user id."""
+        args, protocol = self.args, self.protocol
+        chunks = [names[i : i + 200] for i in range(0, len(names), 200)]
+        found: dict[str, int] = {}
+
+        async def search(chunk: list[str]) -> int:
+            result = await self.admin.presenter(
+                "search_users",
+                {
+                    "permission_type": "meeting",
+                    "permission_id": args.meeting,
+                    "search": [{"username": name} for name in chunk],
+                },
+            )
+            hits = 0
+            for name, matches in zip(chunk, result):
+                for match in matches or []:
+                    if str(match.get("username", "")).lower() == name.lower():
+                        found[name] = int(match["id"])
+                        hits += 1
+                        break
+            return hits
+
+        with protocol.step("find_users", amount=len(names), prefix=args.user_prefix) as step:
+            jobs = [Job("search_users", f"chunk{i + 1}", None, (lambda c=c: search(c))) for i, c in enumerate(chunks)]
+            outcomes = await run_jobs(protocol, jobs, args.create_concurrency)
+            report_errors(protocol, "search_users", outcomes)
+            if not all(o.ok for o in outcomes):
+                raise OpenSlidesError("could not search for existing users")
+            step.details["found"] = len(found)
+            step.details["missing"] = len(names) - len(found)
+        for name, uid in found.items():
+            self.users.append((uid, name))
+            self.reused.add(uid)
+        return found
+
+    async def attach_users(self, found: dict[str, int]) -> None:
+        """Adds reused users to the meeting and group, marks them present and active where needed."""
+        args, protocol = self.args, self.protocol
+        if not found:
+            return
+        ids = sorted(found.values())
+        data = await self.admin.get(
+            [
+                {
+                    "collection": "user",
+                    "ids": ids,
+                    "fields": {
+                        "is_active": None,
+                        "is_present_in_meeting_ids": None,
+                        "meeting_user_ids": {
+                            "type": "relation-list",
+                            "collection": "meeting_user",
+                            "fields": {"meeting_id": None, "group_ids": None},
+                        },
+                    },
+                }
+            ]
+        )
+        updates: list[dict[str, Any]] = []
+        for uid in ids:
+            groups: list[int] = []
+            in_meeting = False
+            for mu in data.get(f"user/{uid}/meeting_user_ids") or []:
+                if data.get(f"meeting_user/{mu}/meeting_id") == args.meeting:
+                    in_meeting = True
+                    self.meeting_users[uid] = mu
+                    groups = list(data.get(f"meeting_user/{mu}/group_ids") or [])
+            present = list(data.get(f"user/{uid}/is_present_in_meeting_ids") or [])
+            active = bool(data.get(f"user/{uid}/is_active"))
+            if in_meeting and self.group_id in groups and args.meeting in present and active:
+                continue
+            updates.append(
+                {
+                    "id": uid,
+                    "is_active": True,
+                    "meeting_id": args.meeting,
+                    "group_ids": sorted({*groups, self.group_id}),
+                    "is_present_in_meeting_ids": sorted({*present, args.meeting}),
+                }
+            )
+        if not updates:
+            return
+
+        batches = [updates[i : i + args.create_batch] for i in range(0, len(updates), args.create_batch)]
+        with protocol.step("attach_users", amount=len(updates), batches=len(batches)) as step:
+            jobs = [
+                Job("attach_users", f"batch{i + 1}", None, (lambda b=b: self.admin.action("user.update", b)))
+                for i, b in enumerate(batches)
+            ]
+            outcomes = await run_jobs(protocol, jobs, args.create_concurrency)
+            report_errors(protocol, "attach_users", outcomes)
+            step.details["updated"] = sum(len(b) for b, o in zip(batches, outcomes) if o.ok)
+            if not all(o.ok for o in outcomes):
+                step.ok = False
+        await self.ensure_meeting_users([u["id"] for u in updates])
+
+    async def create_users(self, names: list[str]) -> None:
+        args, protocol = self.args, self.protocol
         batches = [names[i : i + args.create_batch] for i in range(0, len(names), args.create_batch)]
 
         async def create(batch: list[str]) -> list[int]:
@@ -256,37 +370,66 @@ class Scenario:
                 ],
             )
             ids = [int(r["id"]) for r in result]
-            self.state.add("users", ids)
+            if not args.persistent_users:
+                self.state.add("users", ids)
             for r, name in zip(result, batch):
                 self.users.append((int(r["id"]), name))
                 if r.get("meeting_user_id"):
                     self.meeting_users[int(r["id"])] = int(r["meeting_user_id"])
             return ids
 
-        with protocol.step("create_users", amount=args.amount, batch=args.create_batch, batches=len(batches)) as step:
+        with protocol.step("create_users", amount=len(names), batch=args.create_batch, batches=len(batches)) as step:
+            if not names:
+                step.details["created"] = 0
+                return
+            before = len(self.users)
             jobs = [Job("create_users", f"batch{i + 1}", None, (lambda b=b: create(b))) for i, b in enumerate(batches)]
             outcomes = await run_jobs(protocol, jobs, args.create_concurrency)
-            step.details["created"] = len(self.users)
+            step.details["created"] = len(self.users) - before
             protocol.add_stats("create_users (per batch)", stats_of(outcomes))
             report_errors(protocol, "create_users", outcomes)
-            if not self.users:
-                raise OpenSlidesError("no user could be created")
             if len(self.users) < args.amount:
                 step.ok = False
-        self.users.sort()
 
     async def login_users(self) -> None:
         args, protocol = self.args, self.protocol
+        ids = {name: uid for uid, name in self.users}
         clients = [OSClient(self.http, name, args.users_password) for _, name in self.users]
         with protocol.step("login_users", amount=len(clients), concurrency=args.login_concurrency) as step:
             jobs = [Job("login", c.username, None, c.login) for c in clients]
             outcomes = await run_jobs(protocol, jobs, args.login_concurrency)
             self.voters = [c for c, o in zip(clients, outcomes) if o.ok]
+            # Reused users may have another password: set ours and try again.
+            retry = [c for c, o in zip(clients, outcomes) if not o.ok and ids[c.username] in self.reused]
+            if retry:
+                outcomes += await self.reset_passwords_and_login(retry)
             step.details["logged_in"] = len(self.voters)
             protocol.add_stats("login", stats_of(outcomes))
             report_errors(protocol, "login", outcomes)
         if not self.voters:
             raise OpenSlidesError("no user could log in")
+
+    async def reset_passwords_and_login(self, clients: list[OSClient]) -> list[Outcome]:
+        args, protocol = self.args, self.protocol
+        ids = {name: uid for uid, name in self.users}
+        protocol.warn(f"  {len(clients)} wiederverwendete User konnten sich nicht einloggen – setze ihr Passwort")
+        batches = [clients[i : i + args.create_batch] for i in range(0, len(clients), args.create_batch)]
+
+        async def set_password(batch: list[OSClient]) -> None:
+            await self.admin.action(
+                "user.set_password",
+                [{"id": ids[c.username], "password": args.users_password, "set_as_default": True} for c in batch],
+            )
+
+        jobs = [Job("set_password", f"batch{i + 1}", None, (lambda b=b: set_password(b))) for i, b in enumerate(batches)]
+        outcomes = await run_jobs(protocol, jobs, args.create_concurrency)
+        report_errors(protocol, "set_password", outcomes)
+        retry = [c for b, o in zip(batches, outcomes) if o.ok for c in b]
+        if not retry:
+            return []
+        outcomes = await run_jobs(protocol, [Job("login", c.username, None, c.login) for c in retry], args.login_concurrency)
+        self.voters += [c for c, o in zip(retry, outcomes) if o.ok]
+        return outcomes
 
     async def ensure_meeting_users(self, user_ids: list[int]) -> None:
         missing = [uid for uid in user_ids if uid not in self.meeting_users]
@@ -620,7 +763,7 @@ async def run(args: argparse.Namespace, transport: httpx.AsyncBaseTransport | No
         scenario = Scenario(args, protocol, http)
         try:
             await scenario.preflight()
-            await scenario.create_users()
+            await scenario.prepare_users()
             await scenario.login_users()
             round_ = 0
             while True:
@@ -653,6 +796,11 @@ async def run(args: argparse.Namespace, transport: httpx.AsyncBaseTransport | No
             if any(not v["ok"] for v in scenario.validation):
                 exit_code = exit_code or 2
             try:
+                if args.persistent_users and scenario.users:
+                    protocol.log(
+                        f"{len(scenario.users)} User mit Prefix {args.user_prefix!r} bleiben erhalten. "
+                        f"Löschen: openslides-test-tool cleanup-users --user-prefix {args.user_prefix}"
+                    )
                 if args.keep:
                     protocol.warn(f"--keep: Testdaten bleiben erhalten. Aufräumen: openslides-test-tool cleanup --state {scenario.state.path}")
                 elif not scenario.state.is_empty():
@@ -684,6 +832,53 @@ async def run_cleanup(args: argparse.Namespace, transport: httpx.AsyncBaseTransp
         try:
             await admin.login()
             ok = await cleanup(admin, state, protocol)
+        finally:
+            protocol.close()
+    return 0 if ok else 3
+
+
+async def run_cleanup_users(args: argparse.Namespace, transport: httpx.AsyncBaseTransport | None = None) -> int:
+    """Deletes every user named <prefix><number> in the organization."""
+    protocol = Protocol(Path(args.out) / f"{datetime.now():%Y%m%d-%H%M%S}_cleanup_users", quiet=args.quiet)
+    pattern = re.compile(rf"^{re.escape(args.user_prefix)}\d+$")
+    ok = True
+    async with make_http_client(
+        args.base_url, verify_tls=args.verify_tls, timeout=args.timeout, force_ipv4=args.ipv4, transport=transport
+    ) as http:
+        admin = OSClient(http, args.username, args.password)
+        try:
+            with protocol.step("admin_login", username=args.username):
+                await admin.login()
+            with protocol.step("find_users", prefix=args.user_prefix) as step:
+                data = await admin.get(
+                    [
+                        {
+                            "collection": "organization",
+                            "ids": [1],
+                            "fields": {
+                                "user_ids": {"type": "relation-list", "collection": "user", "fields": {"username": None}}
+                            },
+                        }
+                    ]
+                )
+                users = sorted(
+                    uid
+                    for uid in data.get("organization/1/user_ids") or []
+                    if pattern.match(str(data.get(f"user/{uid}/username", "")))
+                )
+                step.details["found"] = len(users)
+            if users:
+                with protocol.step("cleanup_users", count=len(users)):
+                    ok = await delete_users(admin, users, protocol, args.create_batch)
+                if ok:
+                    protocol.log(f"{len(users)} User mit Prefix {args.user_prefix!r} gelöscht.")
+                else:
+                    protocol.warn("Nicht alle User konnten gelöscht werden.")
+            else:
+                protocol.log(f"Keine User mit Prefix {args.user_prefix!r} gefunden.")
+        except OpenSlidesError as err:
+            protocol.error(f"Fehler: {err}")
+            ok = False
         finally:
             protocol.close()
     return 0 if ok else 3

@@ -12,7 +12,7 @@ vorbereiten: Das Tool legt alles selbst an und entfernt es am Ende wieder.
 ## Ablauf
 
 ```
- admin_login ─ preflight ─ create_users ─ login_users
+ admin_login ─ preflight ─ [find_users ─ attach_users] ─ create_users ─ login_users
       │
       └─ pro Runde: create_content ─ create_polls ─ observer_connect
                     ── [ENTER] ──
@@ -27,7 +27,8 @@ vorbereiten: Das Tool legt alles selbst an und entfernt es am Ende wieder.
 1. **Login** des Superusers und **Preflight**: Meeting vorhanden? Delegierten-Gruppe?
    Elektronische Abstimmung aktiv? Welche Vote-API läuft (classic oder neu)?
 2. **n User anlegen** (alle mit demselben Passwort, in der Delegierten-Gruppe, als anwesend
-   markiert) und **alle einloggen**.
+   markiert) und **alle einloggen**. Mit `--persistent-users` werden vorhandene User mit dem
+   Prefix wiederverwendet und nur die fehlenden angelegt (siehe [Persistente User](#persistente-user)).
 3. Pro Runde **P Anträge bzw. Wahlen mit je einer Abstimmung** anlegen (`--parallel P`).
 4. **Warten auf ENTER**. Die Polls sind jetzt schon in OpenSlides sichtbar, du kannst
    also z. B. Browser oder Monitoring vorbereiten.
@@ -110,6 +111,12 @@ Lokale Dev-Instanz:
 openslides-test-tool run -d localhost:8000 -m 1 -n 50
 ```
 
+Mehrere Läufe hintereinander, ohne die User jedes Mal neu anzulegen:
+
+```bash
+openslides-test-tool run -d openslides.example.org -m 1 -n 1000 --persistent-users
+```
+
 Wenn `-p` fehlt, liest das Tool das Passwort aus der Umgebungsvariable `OS_TEST_TOOL_PASSWORD`
 oder fragt danach. So landet es nicht in der Shell-History.
 
@@ -123,7 +130,8 @@ oder fragt danach. So landet es nicht in der Shell-History.
 | `-m/--meeting` | Meeting-ID (Pflicht) | – |
 | `-n/--amount` | Anzahl Test-User (= Wähler) | 10 |
 | `--users-password` | gemeinsames Passwort der Test-User | `pass` |
-| `--user-prefix` | Präfix der Usernamen | `perf<HHMMSS>_` |
+| `--user-prefix` | Präfix der Usernamen | `perf<HHMMSS>_`, mit `--persistent-users` `perf_` |
+| `--persistent-users` | vorhandene User mit dem Präfix wiederverwenden, nur fehlende anlegen, am Ende behalten | aus |
 | `-t/--target` | `assignment` (Wahl), `motion` (Antrag) oder beides mit Komma | `assignment` |
 | `-P/--parallel` | Anzahl gleichzeitiger Polls | 1 |
 | `--candidates` | Anzahl Kandidierende pro Wahl (aus den Test-Usern) | 3 |
@@ -159,6 +167,7 @@ Gemessene Schritte:
 
 | Schritt | Was gemessen wird |
 |---|---|
+| `find_users`, `attach_users` | nur mit `--persistent-users`: vorhandene User suchen und bei Bedarf ins Meeting holen |
 | `create_users`, `login_users` | Anlegen und Login aller User (Login ist wegen argon2 teuer) |
 | `create_content`, `create_polls` | Anlegen der Anträge/Wahlen und Polls |
 | `start_polls` / `start_visible` | Start-Requests / bis der Status „gestartet“ per Autoupdate ankommt |
@@ -182,6 +191,26 @@ liest es ersatzweise alle 2 s per `?single=1`.
   ```bash
   openslides-test-tool cleanup -d openslides.example.org -u superadmin --state runs/<lauf>/state.json
   ```
+
+## Persistente User
+
+Das Anlegen vieler User ist der langsamste Teil der Vorbereitung. Mit `--persistent-users`
+bleiben die Test-User nach dem Lauf stehen und werden beim nächsten Lauf wiederverwendet:
+
+- Der Präfix ist fest `perf_` (änderbar mit `--user-prefix`), die Namen lauten `perf_1 … perf_n`.
+- Vor dem Anlegen sucht das Tool diese Namen in der Organisation (`find_users`). Gefundene User
+  werden bei Bedarf ins Meeting geholt, in die Gruppe gesteckt, aktiviert und als anwesend
+  markiert (`attach_users`). Nur die fehlenden werden angelegt (`create_users`).
+- Kann sich ein wiederverwendeter User nicht mit `--users-password` einloggen, setzt das Tool
+  sein Passwort darauf und versucht es erneut.
+- Am Ende werden nur Polls, Anträge/Wahlen und Einstellungen aufgeräumt. Die User bleiben, auch
+  bei Ctrl+C und Fehlern.
+
+Löschen aller User mit dem Präfix (genauer: alle User, deren Name `<präfix><zahl>` ist):
+
+```bash
+openslides-test-tool cleanup-users -d openslides.example.org -u superadmin --user-prefix perf_
+```
 
 ## Classic- vs. neue Vote-API
 

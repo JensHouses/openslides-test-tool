@@ -111,6 +111,8 @@ class FakeOpenSlides:
 
         if path == "/system/action/handle_request":
             return self.handle_actions(json.loads(request.content))
+        if path == "/system/presenter/handle_request":
+            return self.handle_presenters(json.loads(request.content))
         if path == "/system/autoupdate":
             requests = json.loads(request.content)
             if request.url.params.get("single"):
@@ -155,22 +157,84 @@ class FakeOpenSlides:
         self.notify()
         return httpx.Response(200, json={"success": True, "results": results})
 
+    def handle_presenters(self, payload: list[dict[str, Any]]) -> httpx.Response:
+        results = []
+        for item in payload:
+            self.action_log.append("presenter:" + item["presenter"])
+            handler = getattr(self, "p_" + item["presenter"])
+            results.append(handler(item["data"]))
+        return httpx.Response(200, json=results)
+
+    def p_search_users(self, data):
+        by_name = {name.lower(): (name, uid) for name, (uid, _) in self.users.items()}
+        out = []
+        for search in data["search"]:
+            hit = by_name.get(search.get("username", "").strip().lower())
+            out.append([{"id": hit[1], "username": hit[0]}] if hit else [])
+        return out
+
     def a_organization_update(self, item):
         for key, value in item.items():
             if key != "id":
                 self.db[f"organization/1/{key}"] = value
 
-    def a_user_create(self, item):
-        if item["username"] in self.users:
-            raise ActionError(f"A user with the username {item['username']} already exists.")
+    def add_user(self, username: str, password: str, meeting_id: int | None = None, group_ids=(), present=True) -> int:
+        """Creates a user directly (test setup) and returns its id."""
+        if username in self.users:
+            raise ActionError(f"A user with the username {username} already exists.")
         uid = self.new_id("user")
-        mu = self.new_id("meeting_user")
-        self.users[item["username"]] = (uid, item["default_password"])
-        self.db[f"user/{uid}/username"] = item["username"]
-        self.db[f"user/{uid}/meeting_user_ids"] = [mu]
-        self.db[f"meeting_user/{mu}/meeting_id"] = item["meeting_id"]
-        self.db[f"meeting_user/{mu}/user_id"] = uid
+        self.users[username] = (uid, password)
+        self.db[f"user/{uid}/username"] = username
+        self.db[f"user/{uid}/is_active"] = True
+        self.db[f"user/{uid}/meeting_user_ids"] = []
+        self.db[f"user/{uid}/is_present_in_meeting_ids"] = []
+        self.db.setdefault("organization/1/user_ids", [1]).append(uid)
+        if meeting_id:
+            self.join_meeting(uid, meeting_id, list(group_ids), present)
+        return uid
+
+    def join_meeting(self, uid: int, meeting_id: int, group_ids: list[int], present: bool) -> int:
+        for mu in self.db[f"user/{uid}/meeting_user_ids"]:
+            if self.db[f"meeting_user/{mu}/meeting_id"] == meeting_id:
+                break
+        else:
+            mu = self.new_id("meeting_user")
+            self.db[f"user/{uid}/meeting_user_ids"].append(mu)
+            self.db[f"meeting_user/{mu}/meeting_id"] = meeting_id
+            self.db[f"meeting_user/{mu}/user_id"] = uid
+        self.db[f"meeting_user/{mu}/group_ids"] = group_ids
+        presence = self.db[f"user/{uid}/is_present_in_meeting_ids"]
+        if present and meeting_id not in presence:
+            presence.append(meeting_id)
+        return mu
+
+    def a_user_create(self, item):
+        uid = self.add_user(
+            item["username"],
+            item["default_password"],
+            item.get("meeting_id"),
+            item.get("group_ids", []),
+            item.get("meeting_id") in item.get("is_present_in_meeting_ids", []),
+        )
         return {"id": uid}
+
+    def a_user_update(self, item):
+        uid = item["id"]
+        if f"user/{uid}/username" not in self.db:
+            raise ActionError(f"Model 'user/{uid}' does not exist.")
+        if "is_active" in item:
+            self.db[f"user/{uid}/is_active"] = item["is_active"]
+        if "meeting_id" in item:
+            self.join_meeting(uid, item["meeting_id"], item.get("group_ids", []), False)
+        if "is_present_in_meeting_ids" in item:
+            self.db[f"user/{uid}/is_present_in_meeting_ids"] = list(item["is_present_in_meeting_ids"])
+
+    def a_user_set_password(self, item):
+        uid = item["id"]
+        username = self.db.get(f"user/{uid}/username")
+        if username is None:
+            raise ActionError(f"Model 'user/{uid}' does not exist.")
+        self.users[username] = (uid, item["password"])
 
     def a_user_delete(self, item):
         uid = item["id"]
@@ -179,6 +243,7 @@ class FakeOpenSlides:
             self.delete_model("meeting_user", mu)
         self.delete_model("user", uid)
         self.users.pop(username, None)
+        self.db["organization/1/user_ids"] = [u for u in self.db.get("organization/1/user_ids", []) if u != uid]
 
     def a_motion_create(self, item):
         mid = self.new_id("motion")

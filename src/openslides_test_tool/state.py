@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,43 @@ def _is_gone(err: OpenSlidesError) -> bool:
     return "does not exist" in text or "not found" in text or err.status == 404
 
 
+async def delete_users(
+    admin: OSClient,
+    users: list[int],
+    protocol: Protocol,
+    batch: int = 100,
+    on_deleted: Callable[[list[int]], None] | None = None,
+) -> bool:
+    """Deletes users in batches. Users that are already gone count as deleted.
+
+    `on_deleted` is called with every chunk of ids that is gone.
+    Returns True if every user is gone.
+    """
+    success = True
+
+    def done(ids: list[int]) -> None:
+        if on_deleted:
+            on_deleted(ids)
+
+    for start in range(0, len(users), batch):
+        chunk = users[start : start + batch]
+        try:
+            await admin.action("user.delete", [{"id": id_} for id_ in chunk])
+            done(chunk)
+        except OpenSlidesError:
+            # Retry one by one to find the broken one.
+            for id_ in chunk:
+                try:
+                    await admin.action("user.delete", [{"id": id_}])
+                except OpenSlidesError as err:
+                    if not _is_gone(err):
+                        protocol.warn(f"could not delete user {id_}: {err}")
+                        success = False
+                        continue
+                done([id_])
+    return success
+
+
 async def cleanup(admin: OSClient, state: State, protocol: Protocol, batch: int = 100) -> bool:
     """Deletes everything in the state and restores changed settings.
 
@@ -98,22 +136,8 @@ async def cleanup(admin: OSClient, state: State, protocol: Protocol, batch: int 
     users = list(state.data["users"])
     if users:
         with protocol.step("cleanup_users", count=len(users)):
-            for start in range(0, len(users), batch):
-                chunk = users[start : start + batch]
-                try:
-                    await admin.action("user.delete", [{"id": id_} for id_ in chunk])
-                    state.remove("users", chunk)
-                except OpenSlidesError:
-                    # Retry one by one to find the broken one.
-                    for id_ in chunk:
-                        try:
-                            await admin.action("user.delete", [{"id": id_}])
-                        except OpenSlidesError as err:
-                            if not _is_gone(err):
-                                protocol.warn(f"could not delete user {id_}: {err}")
-                                success = False
-                                continue
-                        state.remove("users", [id_])
+            if not await delete_users(admin, users, protocol, batch, lambda ids: state.remove("users", ids)):
+                success = False
 
     settings = dict(state.data["org_settings"])
     if settings:
